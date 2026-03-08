@@ -1,5 +1,0 @@
-# Ignore environment variables (SECURITY)
-.env
-.env.local
-node_modules/
-dist/
