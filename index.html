@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>War Simulation Base</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-black text-white font-mono">
+
+    <!-- LOADING SCREEN -->
+    <div id="loader" class="fixed inset-0 bg-black flex items-center justify-center z-50">
+        <div class="text-blue-500 animate-pulse tracking-widest text-xs">INITIALIZING SYSTEM...</div>
+    </div>
+
+    <!-- LOGIN / SIGNUP BOX -->
+    <div id="auth-screen" class="hidden h-screen flex items-center justify-center p-6">
+        <div class="w-full max-w-sm border border-blue-900/50 p-8 rounded bg-slate-950 shadow-2xl">
+            <h2 id="auth-title" class="text-blue-500 text-center font-bold uppercase tracking-[0.2em] mb-8">Login System</h2>
+            
+            <div id="error-msg" class="hidden mb-4 p-2 bg-red-900/20 border border-red-500/50 text-red-500 text-[10px] text-center uppercase"></div>
+
+            <div class="space-y-4">
+                <input id="username" class="w-full bg-black border border-blue-900/30 p-3 text-white text-sm outline-none focus:border-blue-500" placeholder="COMMANDER ID">
+                <input id="email-field" class="hidden w-full bg-black border border-blue-900/30 p-3 text-white text-sm outline-none focus:border-blue-500" placeholder="EMAIL ADDRESS">
+                <input id="password" type="password" class="w-full bg-black border border-blue-900/30 p-3 text-white text-sm outline-none focus:border-blue-500" placeholder="ACCESS CODE">
+                
+                <button id="submit-btn" class="w-full py-3 bg-blue-900/20 border border-blue-500 text-blue-400 uppercase font-bold text-xs tracking-widest hover:bg-blue-900/40 transition-all">Execute</button>
+                
+                <button id="toggle-auth" class="w-full text-slate-500 text-[10px] uppercase hover:text-blue-400 mt-4 transition-colors">Register New Commander</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div id="dashboard-screen" class="hidden min-h-screen flex flex-col">
+        <header class="h-16 border-b border-blue-900/30 flex items-center justify-between px-6 bg-slate-950">
+            <div class="flex items-center gap-2">
+                <i data-lucide="shield" class="text-blue-500 w-5 h-5"></i>
+                <span id="display-name" class="font-bold tracking-tight text-blue-400">COMMANDER</span>
+            </div>
+            <button id="logout-btn" class="text-[10px] text-red-500 uppercase hover:underline">Logoff</button>
+        </header>
+
+        <div class="flex-1 p-8">
+            <div class="max-w-xl mx-auto border border-blue-900/50 p-6 rounded bg-slate-950">
+                <h3 class="text-xs font-bold text-blue-500 uppercase tracking-widest mb-4 border-b border-blue-900/30 pb-2">Terminal Status</h3>
+                <div class="space-y-2 text-[10px] text-slate-400">
+                    <p class="flex justify-between"><span>LINK STATE:</span> <span class="text-emerald-500">ENCRYPTED</span></p>
+                    <p class="flex justify-between"><span>DATABASE:</span> <span class="text-emerald-500">CONNECTED</span></p>
+                    <p class="flex justify-between"><span>SESSION ID:</span> <span id="session-id">---</span></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- FIREBASE & LOGIC -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global environment variables provided by your hosting
+        const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
+        const appId = window.__app_id || 'war-sim-default';
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // UI Elements
+        const loader = document.getElementById('loader');
+        const authScreen = document.getElementById('auth-screen');
+        const dashScreen = document.getElementById('dashboard-screen');
+        const errorMsg = document.getElementById('error-msg');
+        const authTitle = document.getElementById('auth-title');
+        const toggleBtn = document.getElementById('toggle-auth');
+        const emailField = document.getElementById('email-field');
+        const submitBtn = document.getElementById('submit-btn');
+
+        let isLoginView = true;
+
+        // Hash password for security
+        async function hash(str) {
+            const msg = new TextEncoder().encode(str);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msg);
+            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // Toggle Login/Signup
+        toggleBtn.onclick = () => {
+            isLoginView = !isLoginView;
+            authTitle.innerText = isLoginView ? "Login System" : "Enrollment";
+            toggleBtn.innerText = isLoginView ? "Register New Commander" : "Already Enrolled? Login";
+            emailField.classList.toggle('hidden', isLoginView);
+        };
+
+        // Auth Logic
+        submitBtn.onclick = async () => {
+            const userVal = document.getElementById('username').value.toLowerCase();
+            const passVal = document.getElementById('password').value;
+            const emailVal = emailField.value;
+
+            if (!userVal || !passVal) return showError("Credentials required");
+
+            submitBtn.innerText = "PROCESSING...";
+            const hashed = await hash(passVal);
+
+            try {
+                if (!isLoginView) {
+                    // Sign Up
+                    const check = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', userVal));
+                    if (check.exists()) throw new Error("ID ALREADY TAKEN");
+                    
+                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', userVal), {
+                        username: userVal,
+                        password: hashed,
+                        email: emailVal
+                    });
+                } else {
+                    // Login
+                    const acc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', userVal));
+                    if (!acc.exists() || acc.data().password !== hashed) throw new Error("ACCESS DENIED");
+                }
+
+                // Ensure anonymous session for database write
+                if (!auth.currentUser) await signInAnonymously(auth);
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: userVal });
+                
+                location.reload(); // Refresh to trigger observer
+            } catch (e) {
+                showError(e.message);
+                submitBtn.innerText = "Execute";
+            }
+        };
+
+        function showError(m) {
+            errorMsg.innerText = m;
+            errorMsg.classList.remove('hidden');
+        }
+
+        // Observer
+        onAuthStateChanged(auth, async (user) => {
+            loader.classList.add('hidden');
+            if (user) {
+                const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', user.uid));
+                if (snap.exists()) {
+                    dashScreen.classList.remove('hidden');
+                    document.getElementById('display-name').innerText = snap.data().username.toUpperCase();
+                    document.getElementById('session-id').innerText = user.uid.substring(0, 12) + "...";
+                    lucide.createIcons();
+                    return;
+                }
+            }
+            authScreen.classList.remove('hidden');
+            lucide.createIcons();
+        });
+
+        document.getElementById('logout-btn').onclick = () => signOut(auth).then(() => location.reload());
+    </script>
+</body>
+</html>
+
