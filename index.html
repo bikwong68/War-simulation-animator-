@@ -3,161 +3,219 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>War Simulation Base</title>
+    <title>War Simulation Access</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #000; color: #fff; margin: 0; }
+        .animate-spin { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    </style>
 </head>
-<body class="bg-black text-white font-mono">
+<body>
+    <div id="root"></div>
 
-    <!-- LOADING SCREEN -->
-    <div id="loader" class="fixed inset-0 bg-black flex items-center justify-center z-50">
-        <div class="text-blue-500 animate-pulse tracking-widest text-xs">INITIALIZING SYSTEM...</div>
-    </div>
+    <script type="text/babel">
+        const { useState, useEffect, memo } = React;
 
-    <!-- LOGIN / SIGNUP BOX -->
-    <div id="auth-screen" class="hidden h-screen flex items-center justify-center p-6">
-        <div class="w-full max-w-sm border border-blue-900/50 p-8 rounded bg-slate-950 shadow-2xl">
-            <h2 id="auth-title" class="text-blue-500 text-center font-bold uppercase tracking-[0.2em] mb-8">Login System</h2>
-            
-            <div id="error-msg" class="hidden mb-4 p-2 bg-red-900/20 border border-red-500/50 text-red-500 text-[10px] text-center uppercase"></div>
-
-            <div class="space-y-4">
-                <input id="username" class="w-full bg-black border border-blue-900/30 p-3 text-white text-sm outline-none focus:border-blue-500" placeholder="COMMANDER ID">
-                <input id="email-field" class="hidden w-full bg-black border border-blue-900/30 p-3 text-white text-sm outline-none focus:border-blue-500" placeholder="EMAIL ADDRESS">
-                <input id="password" type="password" class="w-full bg-black border border-blue-900/30 p-3 text-white text-sm outline-none focus:border-blue-500" placeholder="ACCESS CODE">
-                
-                <button id="submit-btn" class="w-full py-3 bg-blue-900/20 border border-blue-500 text-blue-400 uppercase font-bold text-xs tracking-widest hover:bg-blue-900/40 transition-all">Execute</button>
-                
-                <button id="toggle-auth" class="w-full text-slate-500 text-[10px] uppercase hover:text-blue-400 mt-4 transition-colors">Register New Commander</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- DASHBOARD -->
-    <div id="dashboard-screen" class="hidden min-h-screen flex flex-col">
-        <header class="h-16 border-b border-blue-900/30 flex items-center justify-between px-6 bg-slate-950">
-            <div class="flex items-center gap-2">
-                <i data-lucide="shield" class="text-blue-500 w-5 h-5"></i>
-                <span id="display-name" class="font-bold tracking-tight text-blue-400">COMMANDER</span>
-            </div>
-            <button id="logout-btn" class="text-[10px] text-red-500 uppercase hover:underline">Logoff</button>
-        </header>
-
-        <div class="flex-1 p-8">
-            <div class="max-w-xl mx-auto border border-blue-900/50 p-6 rounded bg-slate-950">
-                <h3 class="text-xs font-bold text-blue-500 uppercase tracking-widest mb-4 border-b border-blue-900/30 pb-2">Terminal Status</h3>
-                <div class="space-y-2 text-[10px] text-slate-400">
-                    <p class="flex justify-between"><span>LINK STATE:</span> <span class="text-emerald-500">ENCRYPTED</span></p>
-                    <p class="flex justify-between"><span>DATABASE:</span> <span class="text-emerald-500">CONNECTED</span></p>
-                    <p class="flex justify-between"><span>SESSION ID:</span> <span id="session-id">---</span></p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- FIREBASE & LOGIC -->
-    <script type="module">
+        // --- FIREBASE IMPORTS VIA CDN ---
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, getDocs, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Global environment variables provided by your hosting
+        // --- CONFIGURATION ---
         const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
-        const appId = window.__app_id || 'war-sim-default';
-
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-        // UI Elements
-        const loader = document.getElementById('loader');
-        const authScreen = document.getElementById('auth-screen');
-        const dashScreen = document.getElementById('dashboard-screen');
-        const errorMsg = document.getElementById('error-msg');
-        const authTitle = document.getElementById('auth-title');
-        const toggleBtn = document.getElementById('toggle-auth');
-        const emailField = document.getElementById('email-field');
-        const submitBtn = document.getElementById('submit-btn');
-
-        let isLoginView = true;
-
-        // Hash password for security
-        async function hash(str) {
-            const msg = new TextEncoder().encode(str);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', msg);
-            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        // --- SECURITY: SHA-256 PASSWORD HASHING ---
+        async function hashPassword(password) {
+            const msgUint8 = new TextEncoder().encode(password);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        // Toggle Login/Signup
-        toggleBtn.onclick = () => {
-            isLoginView = !isLoginView;
-            authTitle.innerText = isLoginView ? "Login System" : "Enrollment";
-            toggleBtn.innerText = isLoginView ? "Register New Commander" : "Already Enrolled? Login";
-            emailField.classList.toggle('hidden', isLoginView);
-        };
-
-        // Auth Logic
-        submitBtn.onclick = async () => {
-            const userVal = document.getElementById('username').value.toLowerCase();
-            const passVal = document.getElementById('password').value;
-            const emailVal = emailField.value;
-
-            if (!userVal || !passVal) return showError("Credentials required");
-
-            submitBtn.innerText = "PROCESSING...";
-            const hashed = await hash(passVal);
-
-            try {
-                if (!isLoginView) {
-                    // Sign Up
-                    const check = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', userVal));
-                    if (check.exists()) throw new Error("ID ALREADY TAKEN");
-                    
-                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', userVal), {
-                        username: userVal,
-                        password: hashed,
-                        email: emailVal
-                    });
-                } else {
-                    // Login
-                    const acc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', userVal));
-                    if (!acc.exists() || acc.data().password !== hashed) throw new Error("ACCESS DENIED");
+        // --- RETRY HELPER ---
+        const runWithRetry = async (operation, maxRetries = 5) => {
+            let currentDelay = 1000;
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    if (!auth.currentUser) {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                    return await operation();
+                } catch (err) {
+                    if (i === maxRetries - 1) throw err;
+                    await new Promise(r => setTimeout(r, currentDelay));
+                    currentDelay *= 2;
                 }
-
-                // Ensure anonymous session for database write
-                if (!auth.currentUser) await signInAnonymously(auth);
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: userVal });
-                
-                location.reload(); // Refresh to trigger observer
-            } catch (e) {
-                showError(e.message);
-                submitBtn.innerText = "Execute";
             }
         };
 
-        function showError(m) {
-            errorMsg.innerText = m;
-            errorMsg.classList.remove('hidden');
-        }
-
-        // Observer
-        onAuthStateChanged(auth, async (user) => {
-            loader.classList.add('hidden');
-            if (user) {
-                const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', user.uid));
-                if (snap.exists()) {
-                    dashScreen.classList.remove('hidden');
-                    document.getElementById('display-name').innerText = snap.data().username.toUpperCase();
-                    document.getElementById('session-id').innerText = user.uid.substring(0, 12) + "...";
-                    lucide.createIcons();
-                    return;
-                }
-            }
-            authScreen.classList.remove('hidden');
-            lucide.createIcons();
+        const FormInput = memo(({ label, icon, type, value, onChange, placeholder, status, statusMessage }) => {
+            const Icon = lucide[icon];
+            return (
+                <div className="space-y-1 w-full text-left">
+                    <div className="flex justify-between items-end">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</label>
+                        {statusMessage && (
+                            <span className={`text-[10px] font-bold uppercase tracking-wider ${status === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+                                {statusMessage}
+                            </span>
+                        )}
+                    </div>
+                    <div className="relative">
+                        <div className="absolute left-3 top-3 w-5 h-5 text-slate-600"><Icon size={20} /></div>
+                        <input 
+                            type={type} 
+                            required
+                            value={value}
+                            onChange={(e) => onChange(e.target.value)}
+                            className={`w-full bg-black border rounded-lg py-3 pl-11 pr-10 text-white text-sm focus:outline-none transition-colors
+                                ${status === 'error' ? 'border-red-500/50 focus:border-red-500' : 
+                                  status === 'success' ? 'border-emerald-500/50 focus:border-emerald-500' : 
+                                  'border-slate-800 focus:border-blue-500'}`} 
+                            placeholder={placeholder}
+                        />
+                    </div>
+                </div>
+            );
         });
 
-        document.getElementById('logout-btn').onclick = () => signOut(auth).then(() => location.reload());
+        function App() {
+            const [loading, setLoading] = useState(true);
+            const [isSubmitting, setIsSubmitting] = useState(false);
+            const [view, setView] = useState('landing');
+            const [username, setUsername] = useState('');
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [errorMessage, setErrorMessage] = useState('');
+            const [userStatus, setUserStatus] = useState('idle');
+            const [userStatusMsg, setUserStatusMsg] = useState('');
+
+            useEffect(() => {
+                if (view !== 'signup' || username.length === 0) return;
+                const timeoutId = setTimeout(async () => {
+                    if (!/^[a-zA-Z0-9]+$/.test(username)) {
+                        setUserStatus('error'); setUserStatusMsg('Alphanumeric only'); return;
+                    }
+                    if (username.length < 8) {
+                        setUserStatus('error'); setUserStatusMsg('8+ chars required'); return;
+                    }
+                    setUserStatus('loading');
+                    try {
+                        const snap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', username.toLowerCase())));
+                        if (snap.exists()) {
+                            setUserStatus('error'); setUserStatusMsg('ID taken');
+                        } else {
+                            setUserStatus('success'); setUserStatusMsg('Available');
+                        }
+                    } catch (e) { setUserStatus('idle'); }
+                }, 600);
+                return () => clearTimeout(timeoutId);
+            }, [username, view]);
+
+            useEffect(() => {
+                const init = async () => {
+                    try {
+                        await setPersistence(auth, browserLocalPersistence);
+                        onAuthStateChanged(auth, async (u) => {
+                            if (u) {
+                                const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', u.uid));
+                                if (snap.exists() && snap.data().username) {
+                                    setUsername(snap.data().username);
+                                    setView('authenticated');
+                                }
+                            }
+                            setLoading(false);
+                        });
+                    } catch(e) { setLoading(false); }
+                };
+                init();
+            }, []);
+
+            const handleAuth = async (e, type) => {
+                e.preventDefault();
+                if (isSubmitting) return;
+                setIsSubmitting(true);
+                setErrorMessage('');
+                try {
+                    const safeU = username.toLowerCase();
+                    const hashed = await hashPassword(password);
+                    const accDoc = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeU);
+                    const snap = await runWithRetry(() => getDoc(accDoc));
+
+                    if (type === 'signup') {
+                        if (snap.exists()) throw new Error("ID taken");
+                        await setDoc(accDoc, { email: email.toLowerCase(), password: hashed, originalCase: username });
+                    } else {
+                        if (!snap.exists() || snap.data().password !== hashed) throw new Error("Invalid credentials");
+                    }
+
+                    if (auth.currentUser) {
+                        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: safeU });
+                    }
+                    setView('authenticated');
+                } catch (err) { setErrorMessage(err.message); }
+                setIsSubmitting(false);
+            };
+
+            if (loading) return <div className="h-screen flex items-center justify-center text-blue-500">INITIALIZING...</div>;
+
+            if (view === 'authenticated') return (
+                <div className="h-screen flex flex-col items-center justify-center p-6 text-center">
+                    <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center mb-4">
+                        <lucide.ShieldCheck className="text-emerald-500" size={32} />
+                    </div>
+                    <h1 className="text-xl font-bold uppercase tracking-widest">Access Granted</h1>
+                    <p className="text-slate-500 text-xs mt-2">Commander @{username} Authenticated</p>
+                    <button onClick={() => { auth.signOut(); setView('landing'); }} className="mt-8 text-[10px] uppercase font-bold text-slate-500 hover:text-red-500">Sign Out</button>
+                </div>
+            );
+
+            if (view === 'landing') return (
+                <div className="h-screen flex flex-col items-center justify-center p-6 space-y-4">
+                    <lucide.User className="text-blue-500 mb-2" size={48} />
+                    <h1 className="text-2xl font-bold uppercase tracking-tighter">War Simulation</h1>
+                    <div className="w-full max-w-xs space-y-3">
+                        <button onClick={() => setView('signup')} className="w-full py-3 bg-blue-600 font-bold rounded">New Commander</button>
+                        <button onClick={() => setView('login')} className="w-full py-3 bg-slate-900 font-bold rounded">Access Base</button>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="h-screen flex items-center justify-center p-6">
+                    <div className="w-full max-w-sm bg-slate-900/50 p-8 rounded-xl border border-slate-800">
+                        <h2 className="text-xl font-bold mb-6 uppercase tracking-widest">{view === 'login' ? 'Auth' : 'Enroll'}</h2>
+                        {errorMessage && <p className="mb-4 text-red-500 text-[10px] uppercase font-bold">{errorMessage}</p>}
+                        <form onSubmit={(e) => handleAuth(e, view)} className="space-y-4">
+                            <FormInput label="ID" icon="User" type="text" value={username} onChange={setUsername} status={view === 'signup' ? userStatus : 'idle'} statusMessage={view === 'signup' ? userStatusMsg : ''} placeholder="Commander ID" />
+                            {view === 'signup' && <FormInput label="Email" icon="Mail" type="email" value={email} onChange={setEmail} placeholder="base@hq.com" />}
+                            <FormInput label="Code" icon="Lock" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
+                            <button type="submit" className="w-full py-3 bg-blue-600 font-bold rounded mt-4">
+                                {isSubmitting ? 'PROCESSING...' : 'CONFIRM'}
+                            </button>
+                            <button type="button" onClick={() => setView('landing')} className="w-full text-slate-500 text-[10px] mt-2 uppercase">Back</button>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
     </script>
 </body>
 </html>
