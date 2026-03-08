@@ -1,237 +1,356 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>War Simulation Access</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: #000; 
-            color: #fff; 
-            margin: 0; 
-            overflow: hidden;
-            background-image: radial-gradient(circle at 50% 50%, #111 0%, #000 100%);
+import React, { useState, useEffect, memo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs,
+  collection
+} from 'firebase/firestore';
+import { User, Lock, Mail, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+
+// --- SYNCED FROM REPOSITORY: src/lib/firebase.js ---
+const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- IN-PROGRESS: Account Security & Hash Utility ---
+async function hashPassword(password) {
+  const msgUint8 = new TextEncoder().encode(password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// --- REPOSITORY HELPER: Auth Recovery ---
+const runWithRetry = async (operation, maxRetries = 5) => {
+  let currentDelay = 1000;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      if (!auth.currentUser) {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
         }
-        .animate-spin { animation: spin 1s linear infinite; }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    </style>
-</head>
-<body>
-    <div id="root"></div>
+      }
+      return await operation();
+    } catch (err) {
+      if (i === maxRetries - 1) throw err;
+      await new Promise(r => setTimeout(r, currentDelay));
+      currentDelay *= 2;
+    }
+  }
+};
 
-    <script type="text/babel">
-        const { useState, useEffect, memo } = React;
+// --- UI COMPONENTS: Form Input with Live Validation ---
+const FormInput = memo(({ label, icon: Icon, type, value, onChange, placeholder, status, statusMessage }) => (
+  <div className="space-y-1 w-full text-left">
+    <div className="flex justify-between items-end">
+      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</label>
+      {statusMessage && (
+        <span className={`text-[10px] font-bold uppercase tracking-wider ${status === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+          {statusMessage}
+        </span>
+      )}
+    </div>
+    <div className="relative">
+      <Icon className="absolute left-3 top-3 w-5 h-5 text-slate-600" />
+      <input 
+        type={type} 
+        required
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full bg-black border rounded-lg py-3 pl-11 pr-10 text-white text-sm focus:outline-none transition-colors
+          ${status === 'error' ? 'border-red-500/50 focus:border-red-500' : 
+            status === 'success' ? 'border-emerald-500/50 focus:border-emerald-500' : 
+            'border-slate-800 focus:border-blue-500'}`} 
+        placeholder={placeholder}
+      />
+      <div className="absolute right-3 top-3">
+        {status === 'loading' && <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />}
+        {status === 'success' && <CheckCircle2 className="w-5 h-5 text-emerald-500" />}
+        {status === 'error' && <XCircle className="w-5 h-5 text-red-500" />}
+      </div>
+    </div>
+  </div>
+));
 
-        // --- FIREBASE CDN IMPORTS ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+export default function App() {
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false); 
+  const [view, setView] = useState('landing');
+  const [isLoggedIn, setIsLoggedIn] = useState(false); 
+  
+  // Form State
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  
+  // Live Validation State
+  const [userStatus, setUserStatus] = useState('idle'); 
+  const [userStatusMsg, setUserStatusMsg] = useState('');
+  const [emailStatus, setEmailStatus] = useState('idle');
+  const [emailStatusMsg, setEmailStatusMsg] = useState('');
+  const [passStatus, setPassStatus] = useState('idle');
+  const [passStatusMsg, setPassStatusMsg] = useState('');
 
-        // --- FIREBASE INITIALIZATION ---
-        const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'war-sim-animator';
+  // Handle View Switching (Fix: resets inputs when switching between login/signup)
+  const switchView = (newView) => {
+    setUsername('');
+    setEmail('');
+    setPassword('');
+    setErrorMessage('');
+    setUserStatus('idle');
+    setEmailStatus('idle');
+    setPassStatus('idle');
+    setView(newView);
+  };
 
-        // --- SECURITY: SHA-256 PASSWORD HASHING ---
-        // Scrambles the password before it hits the database for repository safety.
-        async function hashPassword(password) {
-            const msgUint8 = new TextEncoder().encode(password);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  // --- LIVE VALIDATION EFFECTS ---
+  useEffect(() => {
+    if (view !== 'signup') return;
+    setUserStatus('idle');
+    setUserStatusMsg('');
+    if (username.length === 0) return;
+    if (!/^[a-zA-Z0-9]+$/.test(username)) {
+      setUserStatus('error');
+      setUserStatusMsg('Letters & numbers only');
+      return;
+    }
+    if (username.length < 8) {
+      setUserStatus('error');
+      setUserStatusMsg('Too short');
+      return;
+    }
+    const checkUsername = async () => {
+      setUserStatus('loading');
+      try {
+        const safeUsername = username.toLowerCase();
+        const docSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername)));
+        if (docSnap.exists()) {
+          setUserStatus('error');
+          setUserStatusMsg('ID taken');
+        } else {
+          setUserStatus('success');
+          setUserStatusMsg('Available');
         }
+      } catch (e) {
+        setUserStatus('idle');
+      }
+    };
+    const timeoutId = setTimeout(checkUsername, 600);
+    return () => clearTimeout(timeoutId);
+  }, [username, view]);
 
-        // --- RESILIENT NETWORK HELPER ---
-        const runWithRetry = async (operation, maxRetries = 5) => {
-            let currentDelay = 1000;
-            for (let i = 0; i < maxRetries; i++) {
-                try {
-                    if (!auth.currentUser) {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                    }
-                    return await operation();
-                } catch (err) {
-                    if (i === maxRetries - 1) throw err;
-                    await new Promise(r => setTimeout(r, currentDelay));
-                    currentDelay *= 2;
-                }
-            }
-        };
-
-        // --- UI COMPONENT: SECURE INPUT ---
-        const FormInput = memo(({ label, iconName, type, value, onChange, placeholder, status, statusMessage }) => {
-            const Icon = lucide[iconName] || lucide.User;
-            return (
-                <div className="space-y-1 w-full text-left">
-                    <div className="flex justify-between items-end">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</label>
-                        {statusMessage && (
-                            <span className={`text-[10px] font-bold uppercase tracking-wider ${status === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
-                                {statusMessage}
-                            </span>
-                        )}
-                    </div>
-                    <div className="relative">
-                        <div className="absolute left-3 top-3.5 text-slate-600"><Icon size={18} /></div>
-                        <input 
-                            type={type} 
-                            required
-                            value={value}
-                            onChange={(e) => onChange(e.target.value)}
-                            className={`w-full bg-black border rounded-lg py-3 pl-10 pr-4 text-white text-sm focus:outline-none transition-colors
-                                ${status === 'error' ? 'border-red-500/50 focus:border-red-500' : 
-                                  status === 'success' ? 'border-emerald-500/50 focus:border-emerald-500' : 
-                                  'border-slate-800 focus:border-blue-500'}`} 
-                            placeholder={placeholder}
-                        />
-                    </div>
-                </div>
-            );
+  useEffect(() => {
+    if (view !== 'signup') return;
+    setEmailStatus('idle');
+    setEmailStatusMsg('');
+    if (!email.includes('@') || !email.includes('.')) return;
+    const checkEmail = async () => {
+      setEmailStatus('loading');
+      try {
+        const safeEmail = email.toLowerCase();
+        const accountsSnap = await runWithRetry(() => getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'accounts')));
+        let emailTaken = false;
+        accountsSnap.forEach(doc => {
+          if (doc.data().email === safeEmail) emailTaken = true;
         });
-
-        function App() {
-            const [loading, setLoading] = useState(true);
-            const [isSubmitting, setIsSubmitting] = useState(false);
-            const [view, setView] = useState('landing');
-            const [username, setUsername] = useState('');
-            const [email, setEmail] = useState('');
-            const [password, setPassword] = useState('');
-            const [errorMessage, setErrorMessage] = useState('');
-            const [userStatus, setUserStatus] = useState('idle');
-            const [userStatusMsg, setUserStatusMsg] = useState('');
-
-            // Validate Username Availability
-            useEffect(() => {
-                if (view !== 'signup' || username.length === 0) return;
-                const check = setTimeout(async () => {
-                    if (!/^[a-zA-Z0-9]+$/.test(username)) {
-                        setUserStatus('error'); setUserStatusMsg('Letters/Numbers only'); return;
-                    }
-                    if (username.length < 8) {
-                        setUserStatus('error'); setUserStatusMsg('8+ characters'); return;
-                    }
-                    setUserStatus('loading');
-                    try {
-                        const snap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', username.toLowerCase())));
-                        setUserStatus(snap.exists() ? 'error' : 'success');
-                        setUserStatusMsg(snap.exists() ? 'ID Taken' : 'Available');
-                    } catch (e) { setUserStatus('idle'); }
-                }, 600);
-                return () => clearTimeout(check);
-            }, [username, view]);
-
-            // Authentication Observer
-            useEffect(() => {
-                const initAuth = async () => {
-                    try {
-                        await setPersistence(auth, browserLocalPersistence);
-                        onAuthStateChanged(auth, async (user) => {
-                            if (user) {
-                                const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', user.uid));
-                                if (snap.exists()) {
-                                    setUsername(snap.data().username);
-                                    setView('authenticated');
-                                }
-                            }
-                            setLoading(false);
-                        });
-                    } catch(e) { setLoading(false); }
-                };
-                initAuth();
-            }, []);
-
-            const handleSubmit = async (e, mode) => {
-                e.preventDefault();
-                if (isSubmitting) return;
-                setIsSubmitting(true);
-                setErrorMessage('');
-
-                try {
-                    const safeU = username.toLowerCase();
-                    const hashed = await hashPassword(password);
-                    const accRef = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeU);
-                    const snap = await runWithRetry(() => getDoc(accRef));
-
-                    if (mode === 'signup') {
-                        if (snap.exists()) throw new Error("ID taken");
-                        await setDoc(accRef, { email: email.toLowerCase(), password: hashed, originalCase: username });
-                    } else {
-                        if (!snap.exists() || snap.data().password !== hashed) throw new Error("Invalid credentials");
-                    }
-
-                    if (auth.currentUser) {
-                        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: safeU });
-                    }
-                    setView('authenticated');
-                } catch (err) { setErrorMessage(err.message); }
-                setIsSubmitting(false);
-            };
-
-            if (loading) return <div className="h-screen flex items-center justify-center text-blue-500 font-bold animate-pulse">CONNECTING TO BASE...</div>;
-
-            if (view === 'authenticated') return (
-                <div className="h-screen flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-500">
-                    <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mb-6 border border-emerald-500/30">
-                        <lucide.ShieldCheck className="text-emerald-500" size={40} />
-                    </div>
-                    <h1 className="text-2xl font-bold uppercase tracking-[0.3em]">Link Established</h1>
-                    <p className="text-slate-500 text-sm mt-2 font-mono italic">Commander @{username} Validated</p>
-                    <button onClick={() => { auth.signOut(); setView('landing'); }} className="mt-12 text-[10px] font-bold text-slate-700 hover:text-red-500 uppercase tracking-widest transition-colors">Terminate Connection</button>
-                </div>
-            );
-
-            if (view === 'landing') return (
-                <div className="h-screen flex flex-col items-center justify-center p-6 space-y-8 animate-in fade-in duration-500">
-                    <div className="relative">
-                        <div className="absolute inset-0 bg-blue-500 blur-3xl opacity-20 rounded-full"></div>
-                        <lucide.User className="text-blue-500 relative z-10" size={64} />
-                    </div>
-                    <div className="text-center space-y-2">
-                        <h1 className="text-4xl font-black uppercase tracking-tighter italic">War Simulation</h1>
-                        <p className="text-slate-500 text-xs uppercase tracking-widest font-bold">Strategic Animator Access</p>
-                    </div>
-                    <div className="w-full max-w-xs space-y-4 pt-4">
-                        <button onClick={() => setView('signup')} className="w-full py-4 bg-blue-600 font-bold rounded-xl hover:bg-blue-500 transition-all transform hover:scale-[1.02] shadow-lg shadow-blue-900/30">New Enrollment</button>
-                        <button onClick={() => setView('login')} className="w-full py-4 bg-slate-900 border border-slate-800 font-bold rounded-xl hover:bg-slate-800 transition-all">Existing Link</button>
-                    </div>
-                </div>
-            );
-
-            return (
-                <div className="h-screen flex items-center justify-center p-6 bg-black">
-                    <div className="w-full max-w-sm bg-slate-900/40 p-8 rounded-3xl border border-slate-800 shadow-2xl backdrop-blur-xl">
-                        <h2 className="text-xl font-bold mb-8 uppercase tracking-widest text-slate-200">{view === 'login' ? 'Authentication' : 'Enrollment'}</h2>
-                        {errorMessage && <div className="mb-6 bg-red-500/10 border border-red-500/20 p-3 rounded-lg text-red-500 text-[11px] font-bold uppercase">{errorMessage}</div>}
-                        <form onSubmit={(e) => handleSubmit(e, view)} className="space-y-6">
-                            <FormInput label="Commander ID" iconName="User" type="text" value={username} onChange={setUsername} status={view === 'signup' ? userStatus : 'idle'} statusMessage={view === 'signup' ? userStatusMsg : ''} placeholder="8+ Alphanumeric" />
-                            {view === 'signup' && <FormInput label="Network Email" iconName="Mail" type="email" value={email} onChange={setEmail} placeholder="hq@base.net" />}
-                            <FormInput label="Access Code" iconName="Lock" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
-                            <button type="submit" disabled={isSubmitting || (view === 'signup' && userStatus === 'error')} className="w-full py-4 bg-blue-600 font-bold rounded-xl mt-4 hover:bg-blue-500 disabled:opacity-50 transition-all">
-                                {isSubmitting ? 'SECURING LINK...' : 'EXECUTE'}
-                            </button>
-                            <button type="button" onClick={() => setView('landing')} className="w-full text-slate-600 text-[10px] font-bold uppercase tracking-widest hover:text-white transition-colors">Abort Access</button>
-                        </form>
-                    </div>
-                </div>
-            );
+        if (emailTaken) {
+          setEmailStatus('error');
+          setEmailStatusMsg('Email in use');
+        } else {
+          setEmailStatus('success');
+          setEmailStatusMsg('Available');
         }
+      } catch (e) {
+        setEmailStatus('idle');
+      }
+    };
+    const timeoutId = setTimeout(checkEmail, 600);
+    return () => clearTimeout(timeoutId);
+  }, [email, view]);
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+  // Password validation effect
+  useEffect(() => {
+    if (view !== 'signup') return;
+    if (password.length === 0) {
+      setPassStatus('idle');
+      setPassStatusMsg('');
+    } else if (password.length < 8) {
+      setPassStatus('error');
+      setPassStatusMsg('Need 8+ chars');
+    } else {
+      setPassStatus('success');
+      setPassStatusMsg('Secure');
+    }
+  }, [password, view]);
+
+  // --- CORE AUTH LOGIC (Auto Login) ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        await setPersistence(auth, browserLocalPersistence);
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {}
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        try {
+          const sessionSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', u.uid)));
+          if (sessionSnap.exists() && sessionSnap.data().username) {
+            setUsername(sessionSnap.data().username);
+            setIsLoggedIn(true);
+            setView('authenticated'); 
+          }
+        } catch (err) {}
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSignUp = async (e) => {
+    e.preventDefault();
+    if (isSubmitting || isLoggedIn) return; 
+    setErrorMessage('');
+    if (userStatus === 'error') { setErrorMessage("Please fix your Commander ID"); return; }
+    if (emailStatus === 'error') { setErrorMessage("This email is already registered"); return; }
+    if (password.length < 8) { setErrorMessage("Password must be 8+ chars"); return; }
+
+    setIsSubmitting(true);
+    try {
+      const safeUsername = username.toLowerCase();
+      const safeEmail = email.toLowerCase();
+      const hashed = await hashPassword(password);
+      const docSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername)));
+      if (docSnap.exists()) { throw new Error("ID taken"); }
+
+      await runWithRetry(() => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername), { 
+        email: safeEmail, 
+        password: hashed,
+        originalCase: username
+      }));
+      
+      if (auth.currentUser) {
+        await runWithRetry(() => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: safeUsername }));
+      }
+      setIsLoggedIn(true);
+      setView('authenticated');
+    } catch (err) { 
+      setErrorMessage(err.message === "ID taken" ? "Commander ID just taken by another user." : "Error creating account."); 
+    }
+    setIsSubmitting(false);
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    if (isSubmitting || isLoggedIn) return; 
+    setIsSubmitting(true);
+    setErrorMessage('');
+    try {
+      const safeUsername = username.toLowerCase();
+      const docSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername)));
+      if (!docSnap.exists()) { setErrorMessage("Commander not found"); setIsSubmitting(false); return; }
+      const hashed = await hashPassword(password);
+      if (docSnap.data().password !== hashed) { setErrorMessage("Wrong password"); setIsSubmitting(false); return; }
+      if (auth.currentUser) {
+        await runWithRetry(() => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: safeUsername }));
+      }
+      setIsLoggedIn(true);
+      setView('authenticated');
+    } catch (err) { setErrorMessage("Login failed"); }
+    setIsSubmitting(false);
+  };
+
+  // --- UI RENDERERS ---
+  if (loading) return <div className="h-screen bg-black flex items-center justify-center"><Loader2 className="animate-spin text-blue-500" /></div>;
+
+  if (view === 'authenticated') return null;
+
+  if (view === 'landing') return (
+    <div className="h-screen bg-black flex flex-col items-center justify-center p-6 space-y-4">
+      <div className="p-4 bg-blue-500/10 rounded-full"><User className="w-12 h-12 text-blue-500" /></div>
+      <h1 className="text-2xl font-bold text-white uppercase tracking-tighter">War Simulation Maker</h1>
+      <div className="w-full max-w-xs space-y-3">
+        <button onClick={() => switchView('signup')} className="w-full py-3 bg-blue-600 text-white font-bold rounded hover:bg-blue-500 transition-colors">Create Account</button>
+        <button onClick={() => switchView('login')} className="w-full py-3 bg-slate-800 text-white font-bold rounded hover:bg-slate-700 transition-colors">Login</button>
+      </div>
+    </div>
+  );
+
+  if (view === 'login' || view === 'signup') return (
+    <div className="h-screen bg-black flex items-center justify-center p-6">
+      <div className="w-full max-w-sm bg-slate-900/50 p-8 rounded-xl border border-slate-800">
+        <h2 className="text-xl font-bold text-white mb-6 uppercase tracking-widest">{view === 'login' ? 'Login' : 'Sign Up'}</h2>
+        {errorMessage && <p className="mb-4 text-red-500 text-xs font-bold uppercase p-2 bg-red-500/10 rounded border border-red-500/20">{errorMessage}</p>}
+        <form onSubmit={view === 'login' ? handleLogin : handleSignUp} className="space-y-4">
+          <FormInput 
+            label="Commander ID" 
+            icon={User} 
+            type="text" 
+            value={username} 
+            onChange={setUsername} 
+            placeholder="Letters & Numbers (8+)" 
+            status={view === 'signup' ? userStatus : 'idle'}
+            statusMessage={view === 'signup' ? userStatusMsg : ''}
+          />
+          {view === 'signup' && (
+            <FormInput 
+              label="Email" 
+              icon={Mail} 
+              type="email" 
+              value={email} 
+              onChange={setEmail} 
+              placeholder="email@base.com" 
+              status={emailStatus}
+              statusMessage={emailStatusMsg}
+            />
+          )}
+          <FormInput 
+            label="Password" 
+            icon={Lock} 
+            type="password" 
+            value={password} 
+            onChange={setPassword} 
+            placeholder="••••••••" 
+            status={view === 'signup' ? passStatus : 'idle'}
+            statusMessage={view === 'signup' ? passStatusMsg : ''}
+          />
+          <button 
+            type="submit" 
+            disabled={isSubmitting || isLoggedIn || (view === 'signup' && (userStatus === 'error' || emailStatus === 'error' || passStatus === 'error'))}
+            className={`w-full py-3 text-white font-bold rounded mt-4 flex justify-center items-center gap-2 transition-all
+              ${(isSubmitting || isLoggedIn) ? 'bg-blue-800 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500'}`}
+          >
+            {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+            {isSubmitting ? 'Processing...' : 'Confirm'}
+          </button>
+          <button type="button" onClick={() => switchView('landing')} className="w-full text-slate-500 text-xs mt-2 uppercase hover:text-white transition-colors">Abort</button>
+        </form>
+      </div>
+    </div>
+  );
+
+  return null;
+}
 
