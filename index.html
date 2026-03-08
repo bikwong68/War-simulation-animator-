@@ -11,7 +11,7 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #000; color: #fff; margin: 0; }
+        body { font-family: 'Inter', sans-serif; background-color: #000; color: #fff; margin: 0; overflow: hidden; }
         .animate-spin { animation: spin 1s linear infinite; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     </style>
@@ -22,12 +22,12 @@
     <script type="text/babel">
         const { useState, useEffect, memo } = React;
 
-        // --- FIREBASE IMPORTS VIA CDN ---
+        // --- FIREBASE CDN IMPORTS ---
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, getDocs, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- CONFIGURATION ---
+        // --- FIREBASE SETUP ---
         const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -42,7 +42,7 @@
             return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        // --- RETRY HELPER ---
+        // --- NETWORK: RESILIENT RETRY LOGIC ---
         const runWithRetry = async (operation, maxRetries = 5) => {
             let currentDelay = 1000;
             for (let i = 0; i < maxRetries; i++) {
@@ -63,8 +63,9 @@
             }
         };
 
-        const FormInput = memo(({ label, icon, type, value, onChange, placeholder, status, statusMessage }) => {
-            const Icon = lucide[icon];
+        // --- COMPONENT: SECURE INPUT ---
+        const FormInput = memo(({ label, iconName, type, value, onChange, placeholder, status, statusMessage }) => {
+            const Icon = lucide[iconName] || lucide.User;
             return (
                 <div className="space-y-1 w-full text-left">
                     <div className="flex justify-between items-end">
@@ -76,13 +77,13 @@
                         )}
                     </div>
                     <div className="relative">
-                        <div className="absolute left-3 top-3 w-5 h-5 text-slate-600"><Icon size={20} /></div>
+                        <div className="absolute left-3 top-3.5 w-4 h-4 text-slate-600"><Icon size={18} /></div>
                         <input 
                             type={type} 
                             required
                             value={value}
                             onChange={(e) => onChange(e.target.value)}
-                            className={`w-full bg-black border rounded-lg py-3 pl-11 pr-10 text-white text-sm focus:outline-none transition-colors
+                            className={`w-full bg-black border rounded-lg py-3 pl-10 pr-4 text-white text-sm focus:outline-none transition-colors
                                 ${status === 'error' ? 'border-red-500/50 focus:border-red-500' : 
                                   status === 'success' ? 'border-emerald-500/50 focus:border-emerald-500' : 
                                   'border-slate-800 focus:border-blue-500'}`} 
@@ -104,6 +105,7 @@
             const [userStatus, setUserStatus] = useState('idle');
             const [userStatusMsg, setUserStatusMsg] = useState('');
 
+            // LIVE VALIDATION ENGINE
             useEffect(() => {
                 if (view !== 'signup' || username.length === 0) return;
                 const timeoutId = setTimeout(async () => {
@@ -111,7 +113,7 @@
                         setUserStatus('error'); setUserStatusMsg('Alphanumeric only'); return;
                     }
                     if (username.length < 8) {
-                        setUserStatus('error'); setUserStatusMsg('8+ chars required'); return;
+                        setUserStatus('error'); setUserStatusMsg('Too short (8+)'); return;
                     }
                     setUserStatus('loading');
                     try {
@@ -126,6 +128,7 @@
                 return () => clearTimeout(timeoutId);
             }, [username, view]);
 
+            // BOOT SEQUENCE
             useEffect(() => {
                 const init = async () => {
                     try {
@@ -145,22 +148,23 @@
                 init();
             }, []);
 
-            const handleAuth = async (e, type) => {
+            const handleAuth = async (e, mode) => {
                 e.preventDefault();
                 if (isSubmitting) return;
                 setIsSubmitting(true);
                 setErrorMessage('');
+
                 try {
                     const safeU = username.toLowerCase();
                     const hashed = await hashPassword(password);
                     const accDoc = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeU);
                     const snap = await runWithRetry(() => getDoc(accDoc));
 
-                    if (type === 'signup') {
-                        if (snap.exists()) throw new Error("ID taken");
+                    if (mode === 'signup') {
+                        if (snap.exists()) throw new Error("Commander ID already registered.");
                         await setDoc(accDoc, { email: email.toLowerCase(), password: hashed, originalCase: username });
                     } else {
-                        if (!snap.exists() || snap.data().password !== hashed) throw new Error("Invalid credentials");
+                        if (!snap.exists() || snap.data().password !== hashed) throw new Error("Invalid Commander credentials.");
                     }
 
                     if (auth.currentUser) {
@@ -171,43 +175,45 @@
                 setIsSubmitting(false);
             };
 
-            if (loading) return <div className="h-screen flex items-center justify-center text-blue-500">INITIALIZING...</div>;
+            if (loading) return <div className="h-screen flex items-center justify-center text-blue-500 font-bold tracking-widest animate-pulse">BOOTING...</div>;
 
             if (view === 'authenticated') return (
-                <div className="h-screen flex flex-col items-center justify-center p-6 text-center">
-                    <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center mb-4">
-                        <lucide.ShieldCheck className="text-emerald-500" size={32} />
+                <div className="h-screen flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-700">
+                    <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mb-6 border border-emerald-500/30">
+                        <lucide.ShieldCheck className="text-emerald-500" size={40} />
                     </div>
-                    <h1 className="text-xl font-bold uppercase tracking-widest">Access Granted</h1>
-                    <p className="text-slate-500 text-xs mt-2">Commander @{username} Authenticated</p>
-                    <button onClick={() => { auth.signOut(); setView('landing'); }} className="mt-8 text-[10px] uppercase font-bold text-slate-500 hover:text-red-500">Sign Out</button>
+                    <h1 className="text-2xl font-bold uppercase tracking-[0.2em] text-white">Access Granted</h1>
+                    <p className="text-slate-500 text-sm mt-3 font-mono">ID: @{username}</p>
+                    <button onClick={() => { auth.signOut(); setView('landing'); }} className="mt-12 text-[10px] uppercase font-bold text-slate-600 hover:text-red-500 transition-colors tracking-widest">Disengage Link</button>
                 </div>
             );
 
             if (view === 'landing') return (
-                <div className="h-screen flex flex-col items-center justify-center p-6 space-y-4">
-                    <lucide.User className="text-blue-500 mb-2" size={48} />
-                    <h1 className="text-2xl font-bold uppercase tracking-tighter">War Simulation</h1>
-                    <div className="w-full max-w-xs space-y-3">
-                        <button onClick={() => setView('signup')} className="w-full py-3 bg-blue-600 font-bold rounded">New Commander</button>
-                        <button onClick={() => setView('login')} className="w-full py-3 bg-slate-900 font-bold rounded">Access Base</button>
+                <div className="h-screen flex flex-col items-center justify-center p-6 space-y-6">
+                    <div className="p-5 bg-blue-500/10 rounded-full border border-blue-500/20">
+                        <lucide.User className="text-blue-500" size={48} />
+                    </div>
+                    <h1 className="text-3xl font-bold uppercase tracking-tighter text-white">War Simulation</h1>
+                    <div className="w-full max-w-xs space-y-3 pt-4">
+                        <button onClick={() => setView('signup')} className="w-full py-4 bg-blue-600 font-bold rounded-lg hover:bg-blue-500 transition-all shadow-lg shadow-blue-900/20">Enroll Commander</button>
+                        <button onClick={() => setView('login')} className="w-full py-4 bg-slate-900 border border-slate-800 font-bold rounded-lg hover:bg-slate-800 transition-all">Existing Access</button>
                     </div>
                 </div>
             );
 
             return (
-                <div className="h-screen flex items-center justify-center p-6">
-                    <div className="w-full max-w-sm bg-slate-900/50 p-8 rounded-xl border border-slate-800">
-                        <h2 className="text-xl font-bold mb-6 uppercase tracking-widest">{view === 'login' ? 'Auth' : 'Enroll'}</h2>
-                        {errorMessage && <p className="mb-4 text-red-500 text-[10px] uppercase font-bold">{errorMessage}</p>}
-                        <form onSubmit={(e) => handleAuth(e, view)} className="space-y-4">
-                            <FormInput label="ID" icon="User" type="text" value={username} onChange={setUsername} status={view === 'signup' ? userStatus : 'idle'} statusMessage={view === 'signup' ? userStatusMsg : ''} placeholder="Commander ID" />
-                            {view === 'signup' && <FormInput label="Email" icon="Mail" type="email" value={email} onChange={setEmail} placeholder="base@hq.com" />}
-                            <FormInput label="Code" icon="Lock" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
-                            <button type="submit" className="w-full py-3 bg-blue-600 font-bold rounded mt-4">
-                                {isSubmitting ? 'PROCESSING...' : 'CONFIRM'}
+                <div className="h-screen flex items-center justify-center p-6 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-slate-900 via-black to-black">
+                    <div className="w-full max-w-sm bg-slate-900/40 p-8 rounded-2xl border border-slate-800 backdrop-blur-md">
+                        <h2 className="text-xl font-bold mb-8 uppercase tracking-widest text-white">{view === 'login' ? 'Auth' : 'Enroll'}</h2>
+                        {errorMessage && <p className="mb-6 text-red-500 text-[11px] uppercase font-bold bg-red-500/10 p-3 rounded border border-red-500/20">{errorMessage}</p>}
+                        <form onSubmit={(e) => handleAuth(e, view)} className="space-y-5">
+                            <FormInput label="Commander ID" iconName="User" type="text" value={username} onChange={setUsername} status={view === 'signup' ? userStatus : 'idle'} statusMessage={view === 'signup' ? userStatusMsg : ''} placeholder="8+ Alpha-numeric" />
+                            {view === 'signup' && <FormInput label="Secure Email" iconName="Mail" type="email" value={email} onChange={setEmail} placeholder="id@base-hq.com" />}
+                            <FormInput label="Access Code" iconName="Lock" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
+                            <button type="submit" disabled={isSubmitting || (view === 'signup' && userStatus === 'error')} className="w-full py-4 bg-blue-600 font-bold rounded-lg mt-6 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                                {isSubmitting ? 'PROCESSING...' : 'CONFIRM LINK'}
                             </button>
-                            <button type="button" onClick={() => setView('landing')} className="w-full text-slate-500 text-[10px] mt-2 uppercase">Back</button>
+                            <button type="button" onClick={() => setView('landing')} className="w-full text-slate-600 text-[10px] mt-4 uppercase font-bold tracking-widest hover:text-white transition-colors">Abort Access</button>
                         </form>
                     </div>
                 </div>
