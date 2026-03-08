@@ -11,7 +11,14 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #000; color: #fff; margin: 0; overflow: hidden; }
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #000; 
+            color: #fff; 
+            margin: 0; 
+            overflow: hidden;
+            background-image: radial-gradient(circle at 50% 50%, #111 0%, #000 100%);
+        }
         .animate-spin { animation: spin 1s linear infinite; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     </style>
@@ -25,16 +32,17 @@
         // --- FIREBASE CDN IMPORTS ---
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, getDocs, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- FIREBASE SETUP ---
+        // --- FIREBASE INITIALIZATION ---
         const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'war-sim-animator';
 
         // --- SECURITY: SHA-256 PASSWORD HASHING ---
+        // Scrambles the password before it hits the database for repository safety.
         async function hashPassword(password) {
             const msgUint8 = new TextEncoder().encode(password);
             const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
@@ -42,7 +50,7 @@
             return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        // --- NETWORK: RESILIENT RETRY LOGIC ---
+        // --- RESILIENT NETWORK HELPER ---
         const runWithRetry = async (operation, maxRetries = 5) => {
             let currentDelay = 1000;
             for (let i = 0; i < maxRetries; i++) {
@@ -63,7 +71,7 @@
             }
         };
 
-        // --- COMPONENT: SECURE INPUT ---
+        // --- UI COMPONENT: SECURE INPUT ---
         const FormInput = memo(({ label, iconName, type, value, onChange, placeholder, status, statusMessage }) => {
             const Icon = lucide[iconName] || lucide.User;
             return (
@@ -77,7 +85,7 @@
                         )}
                     </div>
                     <div className="relative">
-                        <div className="absolute left-3 top-3.5 w-4 h-4 text-slate-600"><Icon size={18} /></div>
+                        <div className="absolute left-3 top-3.5 text-slate-600"><Icon size={18} /></div>
                         <input 
                             type={type} 
                             required
@@ -105,38 +113,35 @@
             const [userStatus, setUserStatus] = useState('idle');
             const [userStatusMsg, setUserStatusMsg] = useState('');
 
-            // LIVE VALIDATION ENGINE
+            // Validate Username Availability
             useEffect(() => {
                 if (view !== 'signup' || username.length === 0) return;
-                const timeoutId = setTimeout(async () => {
+                const check = setTimeout(async () => {
                     if (!/^[a-zA-Z0-9]+$/.test(username)) {
-                        setUserStatus('error'); setUserStatusMsg('Alphanumeric only'); return;
+                        setUserStatus('error'); setUserStatusMsg('Letters/Numbers only'); return;
                     }
                     if (username.length < 8) {
-                        setUserStatus('error'); setUserStatusMsg('Too short (8+)'); return;
+                        setUserStatus('error'); setUserStatusMsg('8+ characters'); return;
                     }
                     setUserStatus('loading');
                     try {
                         const snap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', username.toLowerCase())));
-                        if (snap.exists()) {
-                            setUserStatus('error'); setUserStatusMsg('ID taken');
-                        } else {
-                            setUserStatus('success'); setUserStatusMsg('Available');
-                        }
+                        setUserStatus(snap.exists() ? 'error' : 'success');
+                        setUserStatusMsg(snap.exists() ? 'ID Taken' : 'Available');
                     } catch (e) { setUserStatus('idle'); }
                 }, 600);
-                return () => clearTimeout(timeoutId);
+                return () => clearTimeout(check);
             }, [username, view]);
 
-            // BOOT SEQUENCE
+            // Authentication Observer
             useEffect(() => {
-                const init = async () => {
+                const initAuth = async () => {
                     try {
                         await setPersistence(auth, browserLocalPersistence);
-                        onAuthStateChanged(auth, async (u) => {
-                            if (u) {
-                                const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', u.uid));
-                                if (snap.exists() && snap.data().username) {
+                        onAuthStateChanged(auth, async (user) => {
+                            if (user) {
+                                const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', user.uid));
+                                if (snap.exists()) {
                                     setUsername(snap.data().username);
                                     setView('authenticated');
                                 }
@@ -145,10 +150,10 @@
                         });
                     } catch(e) { setLoading(false); }
                 };
-                init();
+                initAuth();
             }, []);
 
-            const handleAuth = async (e, mode) => {
+            const handleSubmit = async (e, mode) => {
                 e.preventDefault();
                 if (isSubmitting) return;
                 setIsSubmitting(true);
@@ -157,14 +162,14 @@
                 try {
                     const safeU = username.toLowerCase();
                     const hashed = await hashPassword(password);
-                    const accDoc = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeU);
-                    const snap = await runWithRetry(() => getDoc(accDoc));
+                    const accRef = doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeU);
+                    const snap = await runWithRetry(() => getDoc(accRef));
 
                     if (mode === 'signup') {
-                        if (snap.exists()) throw new Error("Commander ID already registered.");
-                        await setDoc(accDoc, { email: email.toLowerCase(), password: hashed, originalCase: username });
+                        if (snap.exists()) throw new Error("ID taken");
+                        await setDoc(accRef, { email: email.toLowerCase(), password: hashed, originalCase: username });
                     } else {
-                        if (!snap.exists() || snap.data().password !== hashed) throw new Error("Invalid Commander credentials.");
+                        if (!snap.exists() || snap.data().password !== hashed) throw new Error("Invalid credentials");
                     }
 
                     if (auth.currentUser) {
@@ -175,45 +180,49 @@
                 setIsSubmitting(false);
             };
 
-            if (loading) return <div className="h-screen flex items-center justify-center text-blue-500 font-bold tracking-widest animate-pulse">BOOTING...</div>;
+            if (loading) return <div className="h-screen flex items-center justify-center text-blue-500 font-bold animate-pulse">CONNECTING TO BASE...</div>;
 
             if (view === 'authenticated') return (
-                <div className="h-screen flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-700">
+                <div className="h-screen flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-500">
                     <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mb-6 border border-emerald-500/30">
                         <lucide.ShieldCheck className="text-emerald-500" size={40} />
                     </div>
-                    <h1 className="text-2xl font-bold uppercase tracking-[0.2em] text-white">Access Granted</h1>
-                    <p className="text-slate-500 text-sm mt-3 font-mono">ID: @{username}</p>
-                    <button onClick={() => { auth.signOut(); setView('landing'); }} className="mt-12 text-[10px] uppercase font-bold text-slate-600 hover:text-red-500 transition-colors tracking-widest">Disengage Link</button>
+                    <h1 className="text-2xl font-bold uppercase tracking-[0.3em]">Link Established</h1>
+                    <p className="text-slate-500 text-sm mt-2 font-mono italic">Commander @{username} Validated</p>
+                    <button onClick={() => { auth.signOut(); setView('landing'); }} className="mt-12 text-[10px] font-bold text-slate-700 hover:text-red-500 uppercase tracking-widest transition-colors">Terminate Connection</button>
                 </div>
             );
 
             if (view === 'landing') return (
-                <div className="h-screen flex flex-col items-center justify-center p-6 space-y-6">
-                    <div className="p-5 bg-blue-500/10 rounded-full border border-blue-500/20">
-                        <lucide.User className="text-blue-500" size={48} />
+                <div className="h-screen flex flex-col items-center justify-center p-6 space-y-8 animate-in fade-in duration-500">
+                    <div className="relative">
+                        <div className="absolute inset-0 bg-blue-500 blur-3xl opacity-20 rounded-full"></div>
+                        <lucide.User className="text-blue-500 relative z-10" size={64} />
                     </div>
-                    <h1 className="text-3xl font-bold uppercase tracking-tighter text-white">War Simulation</h1>
-                    <div className="w-full max-w-xs space-y-3 pt-4">
-                        <button onClick={() => setView('signup')} className="w-full py-4 bg-blue-600 font-bold rounded-lg hover:bg-blue-500 transition-all shadow-lg shadow-blue-900/20">Enroll Commander</button>
-                        <button onClick={() => setView('login')} className="w-full py-4 bg-slate-900 border border-slate-800 font-bold rounded-lg hover:bg-slate-800 transition-all">Existing Access</button>
+                    <div className="text-center space-y-2">
+                        <h1 className="text-4xl font-black uppercase tracking-tighter italic">War Simulation</h1>
+                        <p className="text-slate-500 text-xs uppercase tracking-widest font-bold">Strategic Animator Access</p>
+                    </div>
+                    <div className="w-full max-w-xs space-y-4 pt-4">
+                        <button onClick={() => setView('signup')} className="w-full py-4 bg-blue-600 font-bold rounded-xl hover:bg-blue-500 transition-all transform hover:scale-[1.02] shadow-lg shadow-blue-900/30">New Enrollment</button>
+                        <button onClick={() => setView('login')} className="w-full py-4 bg-slate-900 border border-slate-800 font-bold rounded-xl hover:bg-slate-800 transition-all">Existing Link</button>
                     </div>
                 </div>
             );
 
             return (
-                <div className="h-screen flex items-center justify-center p-6 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-slate-900 via-black to-black">
-                    <div className="w-full max-w-sm bg-slate-900/40 p-8 rounded-2xl border border-slate-800 backdrop-blur-md">
-                        <h2 className="text-xl font-bold mb-8 uppercase tracking-widest text-white">{view === 'login' ? 'Auth' : 'Enroll'}</h2>
-                        {errorMessage && <p className="mb-6 text-red-500 text-[11px] uppercase font-bold bg-red-500/10 p-3 rounded border border-red-500/20">{errorMessage}</p>}
-                        <form onSubmit={(e) => handleAuth(e, view)} className="space-y-5">
-                            <FormInput label="Commander ID" iconName="User" type="text" value={username} onChange={setUsername} status={view === 'signup' ? userStatus : 'idle'} statusMessage={view === 'signup' ? userStatusMsg : ''} placeholder="8+ Alpha-numeric" />
-                            {view === 'signup' && <FormInput label="Secure Email" iconName="Mail" type="email" value={email} onChange={setEmail} placeholder="id@base-hq.com" />}
+                <div className="h-screen flex items-center justify-center p-6 bg-black">
+                    <div className="w-full max-w-sm bg-slate-900/40 p-8 rounded-3xl border border-slate-800 shadow-2xl backdrop-blur-xl">
+                        <h2 className="text-xl font-bold mb-8 uppercase tracking-widest text-slate-200">{view === 'login' ? 'Authentication' : 'Enrollment'}</h2>
+                        {errorMessage && <div className="mb-6 bg-red-500/10 border border-red-500/20 p-3 rounded-lg text-red-500 text-[11px] font-bold uppercase">{errorMessage}</div>}
+                        <form onSubmit={(e) => handleSubmit(e, view)} className="space-y-6">
+                            <FormInput label="Commander ID" iconName="User" type="text" value={username} onChange={setUsername} status={view === 'signup' ? userStatus : 'idle'} statusMessage={view === 'signup' ? userStatusMsg : ''} placeholder="8+ Alphanumeric" />
+                            {view === 'signup' && <FormInput label="Network Email" iconName="Mail" type="email" value={email} onChange={setEmail} placeholder="hq@base.net" />}
                             <FormInput label="Access Code" iconName="Lock" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
-                            <button type="submit" disabled={isSubmitting || (view === 'signup' && userStatus === 'error')} className="w-full py-4 bg-blue-600 font-bold rounded-lg mt-6 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-                                {isSubmitting ? 'PROCESSING...' : 'CONFIRM LINK'}
+                            <button type="submit" disabled={isSubmitting || (view === 'signup' && userStatus === 'error')} className="w-full py-4 bg-blue-600 font-bold rounded-xl mt-4 hover:bg-blue-500 disabled:opacity-50 transition-all">
+                                {isSubmitting ? 'SECURING LINK...' : 'EXECUTE'}
                             </button>
-                            <button type="button" onClick={() => setView('landing')} className="w-full text-slate-600 text-[10px] mt-4 uppercase font-bold tracking-widest hover:text-white transition-colors">Abort Access</button>
+                            <button type="button" onClick={() => setView('landing')} className="w-full text-slate-600 text-[10px] font-bold uppercase tracking-widest hover:text-white transition-colors">Abort Access</button>
                         </form>
                     </div>
                 </div>
