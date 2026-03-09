@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo } from 'react';
+import React, { useState, useEffect, memo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
@@ -6,7 +6,8 @@ import {
   signInWithCustomToken, 
   onAuthStateChanged,
   setPersistence,
-  browserLocalPersistence
+  browserLocalPersistence,
+  signOut
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -16,14 +17,15 @@ import {
   getDocs,
   collection
 } from 'firebase/firestore';
-import { User, Lock, Mail, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import { User, Lock, Mail, Loader2, CheckCircle2, XCircle, LogOut } from 'lucide-react';
 
-// --- SYNCED FROM REPOSITORY: src/lib/firebase.js ---
+// --- DATABASE CONFIGURATION ---
+// We use __app_id to ensure all data is saved to the correct unique project bucket.
 const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'war-sim-default-v1';
 
 // --- IN-PROGRESS: Account Security & Hash Utility ---
 async function hashPassword(password) {
@@ -93,6 +95,8 @@ export default function App() {
   const [view, setView] = useState('landing');
   const [isLoggedIn, setIsLoggedIn] = useState(false); 
   
+  const hasAutoRedirected = useRef(false);
+
   // Form State
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -107,7 +111,6 @@ export default function App() {
   const [passStatus, setPassStatus] = useState('idle');
   const [passStatusMsg, setPassStatusMsg] = useState('');
 
-  // Handle View Switching (Fix: resets inputs when switching between login/signup)
   const switchView = (newView) => {
     setUsername('');
     setEmail('');
@@ -117,6 +120,17 @@ export default function App() {
     setEmailStatus('idle');
     setPassStatus('idle');
     setView(newView);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setIsLoggedIn(false);
+      setUsername('');
+      switchView('landing');
+    } catch (e) {
+      console.error("Logout error", e);
+    }
   };
 
   // --- LIVE VALIDATION EFFECTS ---
@@ -139,6 +153,7 @@ export default function App() {
       setUserStatus('loading');
       try {
         const safeUsername = username.toLowerCase();
+        // FIXED PATH: Ensure we check the global accounts collection correctly
         const docSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername)));
         if (docSnap.exists()) {
           setUserStatus('error');
@@ -164,6 +179,7 @@ export default function App() {
       setEmailStatus('loading');
       try {
         const safeEmail = email.toLowerCase();
+        // FIXED PATH: Query the correct public data collection
         const accountsSnap = await runWithRetry(() => getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'accounts')));
         let emailTaken = false;
         accountsSnap.forEach(doc => {
@@ -184,7 +200,6 @@ export default function App() {
     return () => clearTimeout(timeoutId);
   }, [email, view]);
 
-  // Password validation effect
   useEffect(() => {
     if (view !== 'signup') return;
     if (password.length === 0) {
@@ -209,21 +224,32 @@ export default function App() {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (e) {}
+      } catch (e) {
+        setLoading(false);
+      }
     };
     initAuth();
 
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
-        try {
-          const sessionSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', u.uid)));
-          if (sessionSnap.exists() && sessionSnap.data().username) {
-            setUsername(sessionSnap.data().username);
-            setIsLoggedIn(true);
-            setView('authenticated'); 
+        if (!hasAutoRedirected.current) {
+          try {
+            // FIXED PATH: Check global sessions
+            const sessionSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', u.uid)));
+            if (sessionSnap.exists() && sessionSnap.data().username) {
+              setUsername(sessionSnap.data().username);
+              setIsLoggedIn(true);
+              setView('authenticated'); 
+              hasAutoRedirected.current = true;
+            }
+          } catch (err) {
+            console.error("Session lookup error", err);
           }
-        } catch (err) {}
+        }
+      } else {
+        setIsLoggedIn(false);
       }
+      // Only stop loading once the session check is completely finished
       setLoading(false);
     });
     return () => unsubscribe();
@@ -242,9 +268,11 @@ export default function App() {
       const safeUsername = username.toLowerCase();
       const safeEmail = email.toLowerCase();
       const hashed = await hashPassword(password);
+      // FIXED PATH
       const docSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername)));
       if (docSnap.exists()) { throw new Error("ID taken"); }
 
+      // FIXED PATH
       await runWithRetry(() => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername), { 
         email: safeEmail, 
         password: hashed,
@@ -252,10 +280,12 @@ export default function App() {
       }));
       
       if (auth.currentUser) {
+        // FIXED PATH
         await runWithRetry(() => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: safeUsername }));
       }
       setIsLoggedIn(true);
       setView('authenticated');
+      hasAutoRedirected.current = true; 
     } catch (err) { 
       setErrorMessage(err.message === "ID taken" ? "Commander ID just taken by another user." : "Error creating account."); 
     }
@@ -269,23 +299,51 @@ export default function App() {
     setErrorMessage('');
     try {
       const safeUsername = username.toLowerCase();
+      // FIXED PATH
       const docSnap = await runWithRetry(() => getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'accounts', safeUsername)));
       if (!docSnap.exists()) { setErrorMessage("Commander not found"); setIsSubmitting(false); return; }
       const hashed = await hashPassword(password);
       if (docSnap.data().password !== hashed) { setErrorMessage("Wrong password"); setIsSubmitting(false); return; }
       if (auth.currentUser) {
+        // FIXED PATH
         await runWithRetry(() => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'sessions', auth.currentUser.uid), { username: safeUsername }));
       }
       setIsLoggedIn(true);
       setView('authenticated');
+      hasAutoRedirected.current = true; 
     } catch (err) { setErrorMessage("Login failed"); }
     setIsSubmitting(false);
   };
 
   // --- UI RENDERERS ---
-  if (loading) return <div className="h-screen bg-black flex items-center justify-center"><Loader2 className="animate-spin text-blue-500" /></div>;
+  if (loading) return (
+    <div className="h-screen bg-black flex flex-col items-center justify-center space-y-4">
+      <Loader2 className="animate-spin text-blue-500 w-10 h-10" />
+      <p className="text-blue-500 font-bold uppercase tracking-[0.3em] text-xs animate-pulse">Loading...</p>
+    </div>
+  );
 
-  if (view === 'authenticated') return null;
+  if (view === 'authenticated') return (
+    <div className="h-screen bg-black flex flex-col items-center justify-center p-6 space-y-6">
+      <div className="text-center space-y-2">
+        <div className="inline-block p-4 bg-emerald-500/10 rounded-full mb-2">
+          <CheckCircle2 className="w-12 h-12 text-emerald-500" />
+        </div>
+        <h1 className="text-2xl font-bold text-white uppercase tracking-tighter">Login Successful</h1>
+        <p className="text-slate-500 text-sm font-mono tracking-widest uppercase">Welcome back, {username}</p>
+      </div>
+      
+      <div className="w-full max-w-xs p-1 border-t border-slate-800 pt-6">
+        <button 
+          onClick={handleLogout} 
+          className="w-full py-3 bg-slate-900 text-slate-300 font-bold rounded border border-slate-800 hover:bg-slate-800 hover:text-white transition-all flex items-center justify-center gap-2"
+        >
+          <LogOut className="w-4 h-4" />
+          TEST: LOGOUT / GO BACK
+        </button>
+      </div>
+    </div>
+  );
 
   if (view === 'landing') return (
     <div className="h-screen bg-black flex flex-col items-center justify-center p-6 space-y-4">
